@@ -1,0 +1,29 @@
+# 스토어크롤 (StoreCrawl)
+
+스마트스토어 전체 상품 자동 수집 도구
+
+## 기능
+
+### TAB 1 - 링크 수집 ✅
+- 스마트스토어 URL 입력 → 전체 상품 링크 수집
+- 진행 상황 실시간 표시
+- TXT 파일로 다운로드
+
+### TAB 2 - 상세 크롤링 (개발 중)
+- 링크 → 상품 상세 정보 → 엑셀 저장
+- AI 기반 필터링
+
+## 배포
+
+이 프로젝트는 [Render.com](https://render.com)에 자동 배포됩니다.
+
+GitHub에 푸시하면 자동으로 빌드 및 배포됩니다.
+
+## 로컬 실행
+
+```bash
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+브라우저에서 `http://localhost:8000` 접속.
