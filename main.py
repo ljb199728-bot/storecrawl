@@ -1,9 +1,559 @@
-__pycache__/
-*.pyc
-*.pyo
-.env
-.venv/
-venv/
-output_*.txt
-output_*.xlsx
-.DS_Store
+"""
+스토어크롤 - 스마트스토어 크롤러
+TAB 1: 스토어 URL → 상품 링크 수집
+"""
+import asyncio
+import re
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import httpx
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from pydantic import BaseModel
+import uvicorn
+
+app = FastAPI(title="StoreCrawl")
+jobs: dict = {}
+BASE_DIR = Path(__file__).parent
+
+
+# HTML 페이지 (인라인)
+INDEX_HTML = """<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>스토어크롤 - 스마트스토어 상품 수집기</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Apple SD Gothic Neo','Malgun Gothic',-apple-system,sans-serif;background:#F8FAFC;color:#0F172A;font-size:14px;line-height:1.6}
+
+.header{background:#fff;border-bottom:1px solid #E2E8F0;padding:0 2rem;display:flex;align-items:center;justify-content:space-between;height:60px;position:sticky;top:0;z-index:100}
+.logo{display:flex;align-items:center;gap:12px;font-size:18px;font-weight:700}
+.logo-icon{width:32px;height:32px;background:linear-gradient(135deg,#0EA5E9,#0284C7);border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(14,165,233,0.3)}
+.logo-icon svg{width:16px;height:16px;fill:white}
+.badge{font-size:10px;background:#ECFDF5;color:#059669;border-radius:5px;padding:3px 8px;font-weight:600;letter-spacing:0.3px}
+.tab-nav{display:flex;gap:4px;font-size:13px;color:#64748B}
+.tab-nav span{padding:8px 14px;border-radius:7px;cursor:pointer;font-weight:500}
+.tab-nav span.active{background:#EFF6FF;color:#0EA5E9}
+
+.main{max-width:920px;margin:0 auto;padding:2rem 1rem 4rem}
+
+.hero{text-align:center;padding:1.5rem 0 2rem}
+.hero h1{font-size:30px;font-weight:700;letter-spacing:-0.7px;line-height:1.3}
+.hero h1 span{background:linear-gradient(120deg,#0EA5E9,#0284C7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero p{color:#64748B;margin-top:12px;font-size:14px}
+
+.card{background:#fff;border:1px solid #E2E8F0;border-radius:18px;padding:1.75rem;margin-bottom:1.25rem;box-shadow:0 1px 3px rgba(0,0,0,0.02)}
+
+.label{font-size:12px;font-weight:600;color:#475569;margin-bottom:10px;display:block;letter-spacing:0.3px;text-transform:uppercase}
+.input-row{display:flex;gap:10px}
+.url-input{flex:1;height:48px;border:1.5px solid #E2E8F0;border-radius:11px;padding:0 16px;font-size:14px;outline:none;transition:all .2s;font-family:inherit;background:#fff}
+.url-input:focus{border-color:#0EA5E9;box-shadow:0 0 0 3px rgba(14,165,233,0.1)}
+.url-input::placeholder{color:#CBD5E1}
+.btn-start{height:48px;padding:0 26px;background:linear-gradient(135deg,#0EA5E9,#0284C7);color:#fff;border:none;border-radius:11px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;white-space:nowrap;font-family:inherit;transition:all .2s;box-shadow:0 1px 3px rgba(14,165,233,0.3)}
+.btn-start:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(14,165,233,0.35)}
+.btn-start:disabled{background:#BAE6FD;cursor:not-allowed;transform:none;box-shadow:none}
+
+.example{font-size:12px;color:#94A3B8;margin-top:10px}
+.example code{background:#F1F5F9;padding:2px 8px;border-radius:5px;color:#475569;font-size:11px}
+
+/* Progress */
+.progress-wrap{display:none}
+.progress-wrap.show{display:block;animation:fadeUp .35s ease}
+.progress-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.progress-msg{font-size:14px;font-weight:600;color:#0F172A}
+.progress-cnt{font-size:13px;color:#64748B;font-variant-numeric:tabular-nums}
+.bar-bg{height:10px;background:#F1F5F9;border-radius:99px;overflow:hidden;position:relative}
+.bar-fill{height:100%;background:linear-gradient(90deg,#0EA5E9,#38BDF8);border-radius:99px;transition:width .5s ease;width:0%;position:relative}
+.bar-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.4),transparent);animation:shimmer 1.5s infinite}
+@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+
+.steps{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.step{font-size:11px;padding:5px 11px;border-radius:99px;border:1px solid #E2E8F0;color:#94A3B8;font-weight:500;display:flex;align-items:center;gap:5px}
+.step.done{background:#ECFDF5;border-color:#6EE7B7;color:#059669}
+.step.active{background:#EFF6FF;border-color:#93C5FD;color:#1D4ED8}
+
+/* Result */
+.result-card{display:none}
+.result-card.show{display:block;animation:fadeUp .35s ease}
+.result-stat{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px}
+.stat-box{padding:14px 16px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px}
+.stat-l{font-size:11px;color:#94A3B8;font-weight:600;letter-spacing:0.3px;text-transform:uppercase}
+.stat-v{font-size:22px;font-weight:700;margin-top:4px}
+.stat-v.blue{color:#0EA5E9}
+.stat-v.green{color:#059669}
+
+.url-list{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:12px;max-height:280px;overflow-y:auto;font-family:'SF Mono',Consolas,monospace;font-size:11px;color:#475569}
+.url-list div{padding:3px 8px;border-bottom:1px dashed #E2E8F0;word-break:break-all}
+.url-list div:last-child{border-bottom:none}
+
+.action-btns{display:flex;gap:10px;margin-top:16px;justify-content:flex-end}
+.btn-action{padding:11px 20px;border:none;border-radius:11px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .2s;display:flex;align-items:center;gap:7px}
+.btn-download{background:#0EA5E9;color:#fff;box-shadow:0 1px 3px rgba(14,165,233,0.3)}
+.btn-download:hover{background:#0284C7}
+.btn-next{background:#059669;color:#fff;box-shadow:0 1px 3px rgba(5,150,105,0.3)}
+.btn-next:hover{background:#047857}
+.btn-secondary{background:#F1F5F9;color:#475569}
+
+.err-msg{background:#FEF2F2;border:1px solid #FECACA;border-radius:12px;padding:14px 18px;color:#DC2626;font-size:13px;display:none;font-weight:500}
+.err-msg.show{display:flex;align-items:center;gap:10px}
+
+.spinner{width:14px;height:14px;border:2.5px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.footer{text-align:center;color:#94A3B8;font-size:12px;margin-top:2rem}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+    스토어크롤
+    <span class="badge">v1.0</span>
+  </div>
+  <div class="tab-nav">
+    <span class="active">TAB 1 · 링크 수집</span>
+    <span style="opacity:0.5">TAB 2 · 상세 크롤링 (개발 중)</span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="hero">
+    <h1>경쟁 스마트스토어,<br><span>전체 상품 한 번에 수집</span></h1>
+    <p>스토어 URL만 입력하면 전체 상품 링크를 자동으로 수집합니다</p>
+  </div>
+
+  <!-- 입력 -->
+  <div class="card">
+    <span class="label">크롤링할 스마트스토어 URL</span>
+    <div class="input-row">
+      <input class="url-input" id="urlInput" type="text"
+        placeholder="https://smartstore.naver.com/스토어아이디" />
+      <button class="btn-start" id="startBtn" onclick="startCrawl()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        수집 시작
+      </button>
+    </div>
+    <div class="example">
+      예시: <code>https://smartstore.naver.com/flipcompany</code>
+    </div>
+  </div>
+
+  <!-- 에러 -->
+  <div class="err-msg" id="errMsg">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <span id="errText"></span>
+  </div>
+
+  <!-- 진행 -->
+  <div class="card progress-wrap" id="progressCard">
+    <div class="progress-top">
+      <span class="progress-msg" id="progressMsg">준비 중...</span>
+      <span class="progress-cnt" id="progressCnt"></span>
+    </div>
+    <div class="bar-bg"><div class="bar-fill" id="barFill"></div></div>
+    <div class="steps">
+      <span class="step" id="s1">🔗 스토어 분석</span>
+      <span class="step" id="s2">📋 채널 정보 확인</span>
+      <span class="step" id="s3">🛍 상품 링크 수집</span>
+      <span class="step" id="s4">✅ 완료</span>
+    </div>
+  </div>
+
+  <!-- 결과 -->
+  <div class="card result-card" id="resultCard">
+    <span class="label">수집 결과</span>
+    <div class="result-stat">
+      <div class="stat-box">
+        <div class="stat-l">스토어</div>
+        <div class="stat-v" id="rStore" style="font-size:16px">-</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-l">수집 상품</div>
+        <div class="stat-v blue" id="rTotal">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-l">상태</div>
+        <div class="stat-v green" id="rStatus" style="font-size:16px">-</div>
+      </div>
+    </div>
+    <span class="label" style="margin-top:14px">상품 URL 미리보기 (최대 50개)</span>
+    <div class="url-list" id="urlList"></div>
+    <div class="action-btns">
+      <button class="btn-action btn-secondary" onclick="resetAll()">새로 시작</button>
+      <button class="btn-action btn-download" onclick="downloadTxt()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        TXT 다운로드
+      </button>
+      <button class="btn-action btn-next" onclick="alert('TAB 2 (상세 크롤링) 기능은 곧 추가됩니다!')">
+        TAB 2로 이동 →
+      </button>
+    </div>
+  </div>
+
+  <div class="footer">© 2026 스토어크롤 · 안전한 데이터 수집을 위한 도구</div>
+</div>
+
+<script>
+let currentJobId = null;
+let pollTimer = null;
+
+function setStep(n) {
+  for(let i=1;i<=4;i++){
+    const el = document.getElementById('s'+i);
+    if(i < n) el.className='step done';
+    else if(i === n) el.className='step active';
+    else el.className='step';
+  }
+}
+
+async function startCrawl() {
+  const url = document.getElementById('urlInput').value.trim();
+  if(!url){
+    document.getElementById('urlInput').style.borderColor='#EF4444';
+    return;
+  }
+  document.getElementById('urlInput').style.borderColor='';
+  hideError();
+
+  const btn = document.getElementById('startBtn');
+  btn.innerHTML = '<span class="spinner"></span> 수집 중...';
+  btn.disabled = true;
+
+  // 상태 초기화
+  document.getElementById('progressCard').className='card progress-wrap show';
+  document.getElementById('resultCard').className='card result-card';
+  document.getElementById('barFill').style.width='0%';
+  document.getElementById('progressMsg').textContent='스토어 접속 중...';
+  document.getElementById('progressCnt').textContent='';
+  setStep(1);
+
+  try {
+    const res = await fetch('/api/crawl/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({url})
+    });
+    const data = await res.json();
+    if(data.error){ showError(data.error); resetBtn(); return; }
+    currentJobId = data.job_id;
+    pollStatus();
+  } catch(e) {
+    showError('서버 연결 실패: ' + e.message);
+    resetBtn();
+  }
+}
+
+function pollStatus() {
+  pollTimer = setInterval(async () => {
+    if(!currentJobId) return;
+    try {
+      const res = await fetch('/api/crawl/status/' + currentJobId);
+      const job = await res.json();
+
+      document.getElementById('progressMsg').textContent = job.message || '수집 중...';
+      
+      if(job.total > 0) {
+        const pct = Math.min(100, Math.round((job.progress / job.total) * 100));
+        document.getElementById('barFill').style.width = pct + '%';
+        document.getElementById('progressCnt').textContent =
+          job.progress.toLocaleString() + ' / ' + job.total.toLocaleString();
+
+        if(pct < 30) setStep(2);
+        else if(pct < 100) setStep(3);
+      } else {
+        setStep(1);
+      }
+
+      if(job.status === 'done') {
+        clearInterval(pollTimer);
+        setStep(4);
+        document.getElementById('barFill').style.width = '100%';
+        await loadResult();
+        resetBtn();
+      } else if(job.status === 'error') {
+        clearInterval(pollTimer);
+        showError(job.message);
+        document.getElementById('progressCard').className='card progress-wrap';
+        resetBtn();
+      }
+    } catch(e) { console.error(e); }
+  }, 1000);
+}
+
+async function loadResult() {
+  const res = await fetch('/api/crawl/preview/' + currentJobId);
+  const data = await res.json();
+
+  document.getElementById('rStore').textContent = data.store_name;
+  document.getElementById('rTotal').textContent = data.total.toLocaleString() + '개';
+  document.getElementById('rStatus').textContent = '수집 완료 ✓';
+  
+  document.getElementById('urlList').innerHTML = data.urls
+    .map((u,i) => `<div>${(i+1).toString().padStart(3,'0')}. ${u}</div>`)
+    .join('') + (data.total > data.urls.length ? `<div style="text-align:center;padding:8px;color:#94A3B8">... 외 ${(data.total - data.urls.length).toLocaleString()}개 더</div>` : '');
+
+  document.getElementById('progressCard').className='card progress-wrap';
+  document.getElementById('resultCard').className='card result-card show';
+}
+
+function downloadTxt() {
+  if(!currentJobId) return;
+  window.location.href = '/api/crawl/download/' + currentJobId;
+}
+
+function resetAll() {
+  document.getElementById('urlInput').value = '';
+  document.getElementById('progressCard').className='card progress-wrap';
+  document.getElementById('resultCard').className='card result-card';
+  hideError();
+  currentJobId = null;
+  if(pollTimer) clearInterval(pollTimer);
+}
+
+function showError(msg) {
+  document.getElementById('errText').textContent = msg;
+  document.getElementById('errMsg').className = 'err-msg show';
+}
+function hideError() {
+  document.getElementById('errMsg').className = 'err-msg';
+}
+
+function resetBtn() {
+  const btn = document.getElementById('startBtn');
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> 수집 시작';
+  btn.disabled = false;
+}
+
+// Enter 키로도 시작 가능
+document.getElementById('urlInput').addEventListener('keydown', (e) => {
+  if(e.key === 'Enter') startCrawl();
+});
+</script>
+</body>
+</html>
+"""
+
+
+class CrawlRequest(BaseModel):
+    url: str
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return HTMLResponse(INDEX_HTML)
+
+
+@app.post("/api/crawl/start")
+async def start_crawl(req: CrawlRequest, background_tasks: BackgroundTasks):
+    url = req.url.strip().rstrip("/")
+    
+    if "/category/" in url:
+        url = url.split("/category/")[0]
+    if "?" in url:
+        url = url.split("?")[0]
+    
+    if not url.startswith("https://smartstore.naver.com/"):
+        return JSONResponse(
+            {"error": "스마트스토어 URL이 아닙니다."},
+            status_code=400
+        )
+    
+    job_id = datetime.now().strftime("%Y%m%d%H%M%S")
+    jobs[job_id] = {
+        "status": "running",
+        "progress": 0,
+        "total": 0,
+        "message": "스토어 분석 중...",
+        "store_name": url.split("/")[-1],
+        "urls": [],
+        "started_at": datetime.now().isoformat(),
+    }
+    
+    background_tasks.add_task(crawl_store_links, job_id, url)
+    return {"job_id": job_id, "store_name": jobs[job_id]["store_name"]}
+
+
+@app.get("/api/crawl/status/{job_id}")
+async def get_status(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse({"error": "작업을 찾을 수 없습니다."}, status_code=404)
+    job = jobs[job_id]
+    return {
+        "status": job["status"],
+        "progress": job["progress"],
+        "total": job["total"],
+        "message": job["message"],
+        "store_name": job["store_name"],
+        "url_count": len(job.get("urls", [])),
+    }
+
+
+@app.get("/api/crawl/download/{job_id}")
+async def download_result(job_id: str):
+    if job_id not in jobs or jobs[job_id]["status"] != "done":
+        return JSONResponse({"error": "결과 없음"}, status_code=404)
+    
+    job = jobs[job_id]
+    content_lines = [
+        f"# 스토어: {job['store_name']}",
+        f"# 수집일시: {job['started_at']}",
+        f"# 총 상품수: {len(job['urls'])}",
+        "",
+    ]
+    content_lines.extend(job["urls"])
+    content = "\n".join(content_lines)
+    
+    output_path = BASE_DIR / f"output_{job_id}.txt"
+    output_path.write_text(content, encoding="utf-8")
+    
+    return FileResponse(
+        str(output_path),
+        filename=f"{job['store_name']}.txt",
+        media_type="text/plain"
+    )
+
+
+@app.get("/api/crawl/preview/{job_id}")
+async def preview_result(job_id: str, limit: int = 50):
+    if job_id not in jobs:
+        return JSONResponse({"error": "결과 없음"}, status_code=404)
+    job = jobs[job_id]
+    return {
+        "store_name": job["store_name"],
+        "total": len(job.get("urls", [])),
+        "urls": job.get("urls", [])[:limit],
+    }
+
+
+async def crawl_store_links(job_id: str, store_url: str):
+    job = jobs[job_id]
+    try:
+        job["message"] = "스토어 정보 분석 중..."
+        channel_no = await get_channel_no(store_url)
+        
+        if not channel_no:
+            job["status"] = "error"
+            job["message"] = "스토어 정보를 가져올 수 없습니다."
+            return
+        
+        job["channel_no"] = channel_no
+        job["message"] = f"상품 목록 조회 중..."
+        
+        all_urls = await fetch_all_product_urls(channel_no, store_url, job)
+        
+        if not all_urls:
+            job["status"] = "error"
+            job["message"] = "수집된 상품이 없습니다."
+            return
+        
+        job["urls"] = all_urls
+        job["status"] = "done"
+        job["progress"] = len(all_urls)
+        job["total"] = len(all_urls)
+        job["message"] = f"수집 완료! 총 {len(all_urls):,}개 상품"
+    
+    except Exception as e:
+        job["status"] = "error"
+        job["message"] = f"오류 발생: {str(e)}"
+
+
+async def get_channel_no(store_url: str) -> Optional[str]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        try:
+            resp = await client.get(store_url, headers=headers)
+            html = resp.text
+            
+            patterns = [
+                r'"channelNo"\s*:\s*"?(\d+)"?',
+                r'channelNo["\']?\s*[:=]\s*["\']?(\d+)',
+                r'/stores/(\d+)/',
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, html)
+                if match:
+                    return match.group(1)
+            return None
+        except Exception as e:
+            print(f"channelNo 추출 실패: {e}")
+            return None
+
+
+async def fetch_all_product_urls(channel_no: str, store_url: str, job: dict) -> list:
+    all_urls = []
+    page = 1
+    page_size = 80
+    total_count = None
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        "Referer": store_url,
+    }
+    
+    api_base = f"https://smartstore.naver.com/i/v1/stores/{channel_no}/categories/ALL/products"
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            params = {
+                "page": page,
+                "pageSize": page_size,
+                "sortType": "POPULAR",
+                "includeOutOfStocks": "true",
+                "useStaticPrice": "false",
+            }
+            
+            try:
+                resp = await client.get(api_base, params=params, headers=headers)
+                if resp.status_code != 200:
+                    break
+                
+                data = resp.json()
+                
+                if total_count is None:
+                    total_count = data.get("totalCount", 0)
+                    job["total"] = total_count
+                
+                items = data.get("simpleProducts", [])
+                if not items:
+                    break
+                
+                for item in items:
+                    product_no = item.get("productNo")
+                    if product_no:
+                        url = f"{store_url}/products/{product_no}"
+                        all_urls.append(url)
+                
+                job["progress"] = len(all_urls)
+                job["message"] = f"수집 중... {len(all_urls):,} / {total_count:,}"
+                
+                if len(all_urls) >= total_count:
+                    break
+                
+                page += 1
+                await asyncio.sleep(0.3)
+            
+            except Exception as e:
+                print(f"페이지 {page} 수집 실패: {e}")
+                break
+    
+    return all_urls
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
